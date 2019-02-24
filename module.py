@@ -19,6 +19,8 @@ class Module(object):
         return  []
     def update(self,lr):
         pass
+    def acc_gradient(self):
+        pass
     def change_to_test(self):
         self.phase="test"
     def change_to_train(self):
@@ -34,6 +36,8 @@ class Linear(Module):
         self.output_dimension=output_dimension
         self.__b_gradient=0
         self.__w_gradient=0
+        self.__w_gradient_list=[]
+        self.__b_gradient_list=[]
         self.weight_initializer=weight_initializer
         self.bias_initializer=bias_initializer
     def forward(self,pro=False):
@@ -76,8 +80,15 @@ class Linear(Module):
                 self.prev_module.backward(True)
     def update(self,lr):
         # Compute the average gradient in the gradient list and apply them to the parameters
-        self.__w=self.__w-lr*self.__w_gradient/list(self.prev_module.output.size())[1]
-        self.__b=self.__b-lr*self.__b_gradient.mean(1,True)
+        self.__w=self.__w-lr*FloatTensor(sum(self.__w_gradient_list))*(1.0/len(self.__w_gradient_list))
+        self.__b=self.__b-lr*FloatTensor(sum(self.__b_gradient_list))*(1.0/len(self.__b_gradient_list))
+        # Clean the list
+        self.__w_gradient_list=[]
+        self.__b_gradient_list=[]
+    def acc_gradient(self):
+        # Store the gradientof every sample in a list
+        self.__w_gradient_list.append(self.__w_gradient.numpy().copy())
+        self.__b_gradient_list.append(self.__b_gradient.numpy().copy())
 class Inputholder(Module):
     '''
     This layer is a holder of data.Every neural network should begin with this layer and use the input_value property to pass train or test data.
@@ -88,15 +99,17 @@ class Inputholder(Module):
         self.input_value=input_value
     def forward(self,pro=False):
         super(Inputholder,self).forward()
-        self.output=FloatTensor(self.input_value).t()
+        self.output=FloatTensor(self.input_value)
         if self.next_module is not None:
             if pro is True:
                 self.next_module.forward(True)
     def backward(self,pro=False):
         super(Inputholder,self).forward()
         super(Inputholder,self).backward()
+        self.gradient=FloatTensor(self.input_value).zero_()+1
+        self.gradient=self.gradient.view(-1).diag()
         if self.next_module is not None:
-            self.gradient=self.next_module.gradient
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         '''if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -116,9 +129,10 @@ class ReLU(Module):
     def backward(self,pro=False):
         super(ReLU,self).forward()
         super(ReLU,self).backward()
-        if self.next_module is not None:        
-            self.gradient=0.5*(self.prev_module.output.sign()+1)
-            self.gradient=self.gradient*self.next_module.gradient
+        self.gradient=0.5*(self.prev_module.output.sign()+1)
+        self.gradient=self.gradient.view(-1).diag()
+        if self.next_module is not None:
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -137,9 +151,10 @@ class Tanh(Module):
     def backward(self,pro=False):
         super(Tanh,self).forward()
         super(Tanh,self).backward()
+        self.gradient=1-(self.prev_module.output.tanh())**2
+        self.gradient=self.gradient.view(-1).diag()
         if self.next_module is not None:
-            self.gradient=1-(self.prev_module.output.tanh())**2
-            self.gradient=self.gradient*self.next_module.gradient
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -158,9 +173,10 @@ class Sigmoid(Module):
     def backward(self,pro=False):
         super(Sigmoid,self).forward()
         super(Sigmoid,self).backward()
+        self.gradient=self.output*(1-self.output)
+        self.gradient=self.gradient.view(-1).diag()
         if self.next_module is not None:
-            self.gradient=self.output*(1-self.output)
-            self.gradient=self.gradient*self.next_module.gradient
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -176,7 +192,7 @@ class LossMSE(Module):
         super(LossMSE,self).forward()
         # Only do forward process in training time
         if self.phase =="train":
-            self.output=((self.prev_module.output-self.target)**2).sum(0,True)
+            self.output=((self.prev_module.output-self.target)**2).sum()
             if self.next_module is not None:
                 if pro is True:
                     self.next_module.forward(True)
@@ -185,7 +201,7 @@ class LossMSE(Module):
         super(LossMSE,self).backward()
         self.gradient=2*(self.prev_module.output-self.target)
         if self.next_module is not None:
-            self.gradient=self.gradient*(self.next_module.gradient)
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -197,29 +213,17 @@ class Softmax(Module):
             self.prev_module.next_module=self
     def forward(self,pro=False):
         super(Softmax,self).forward()
-        self.output=(self.prev_module.output-self.prev_module.output.max(0,True)[0]).exp()
-        self.output=self.output/self.output.sum(0,True)
+        self.output=(self.prev_module.output-self.prev_module.output.max()).exp()
+        self.output=self.output/self.output.sum()
         if self.next_module is not None:
             if pro is True:
                 self.next_module.forward(True)
     def backward(self,pro=False):
         super(Softmax,self).forward()
-        super(Softmax,self).backward()     
+        super(Softmax,self).backward()
+        self.gradient=self.output.view(-1).diag()-self.output.mm(self.output.t())
         if self.next_module is not None:
-            # Change axis to batch first
-            self.gradient=self.output.t().clone()
-            s=list(self.gradient.size())[0]
-            # Rearange to contiguous to view
-            self.gradient = self.gradient.contiguous()
-            # Make a column vector and a row vector to compute the matrix for computing gradient
-            self.gradient_1 = self.gradient.view(s,-1,1).clone()
-            self.gradient = self.gradient.contiguous()
-            self.gradient_2 = self.gradient.view(s,1,-1).clone()
-            # Compute the gradient matrix
-            self.gradient = self.gradient_1.bmm(self.gradient_2)
-            self.gradient = -1*self.gradient.bmm(self.next_module.gradient.t().contiguous().view(s,-1,1))
-            # Multiply also the gradient afterwards and add the extra gradient for i=j
-            self.gradient = self.gradient.contiguous().view(s,-1).t()+self.next_module.gradient*self.output
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
@@ -236,7 +240,7 @@ class LossCrossEntropy(Module):
         super(LossCrossEntropy,self).forward()
         # Only do forward process in training time
         if self.phase =="train":
-            self.output=-1*((self.prev_module.output+self.eps).log()*self.target).sum(0,True)
+            self.output=-1*((self.prev_module.output+self.eps).log()*self.target).sum()
             if self.next_module is not None:
                 if pro is True:
                     self.next_module.forward(True)
@@ -245,11 +249,10 @@ class LossCrossEntropy(Module):
         super(LossCrossEntropy,self).backward()
         self.gradient=-1*(1/(self.prev_module.output+self.eps)*self.target)
         if self.next_module is not None:
-            self.gradient=self.gradient*(self.next_module.gradient)
+            self.gradient=self.gradient.mm(self.next_module.gradient)
         if self.prev_module is not None:
             if pro is True:
                 self.prev_module.backward(True)
-
 
 class Sequential(Module):
     def __init__(self,*args):
@@ -294,6 +297,9 @@ class Sequential(Module):
     def update(self,lr):
         for l in self.args:
             l.update(lr)
+    def acc_gradient(self):
+        for l in self.args:
+            l.acc_gradient()
     def get_layer(self,index):
         # Return the middle layer
         return self.args[index]
@@ -305,6 +311,7 @@ class Sequential(Module):
         self.phase="train"
         for l in self.args:
             l.change_to_train()
+
 
 
 

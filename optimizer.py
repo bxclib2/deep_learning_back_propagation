@@ -95,31 +95,44 @@ class Optimizer():
         '''
         Just a whole batch version of SGD.All procedures are similar to SGD.
         '''
-        
         network = self.network 
         # Change to train mode
         while network is not None:
             network.change_to_train()
             network=network.next_module
-            
-        # Choose the data,put it in the network
-        data_choose=self.train_data
-        self.network.input_value=FloatTensor(data_choose.astype(np.float))
-        # Choose the label,put it in the network
-        label_choose=self.train_labels
-        self.network_end.target=FloatTensor(label_choose.astype(np.float)).t()
-        # Do forward pass and backward pass
-        self.network.forward(True)
-        self.network_end.backward(True)
+         
+        # Get a array for store the errors for each samples for this step
+        err_list=[]
+        for i in range(0, self.data_size):
+            # Choose the data,change to a vector,put it in the network
+            data_choose=self.train_data[i,:]
+            data_choose.shape=data_choose.shape[0],1
+            self.network.input_value=FloatTensor(data_choose.astype(np.float))
+            # Choose the label,change to a vector,put it in the network
+            label_choose=self.train_labels[i,:]
+            label_choose.shape=label_choose.shape[0],1
+            self.network_end.target=FloatTensor(label_choose.astype(np.float))
+            # Do forward pass and backward pass
+            self.network.forward(True)
+            self.network_end.backward(True)
+            network=self.network
+            # Compute the error of this step this sample, and store it in the "err_list"
+            err_list.append(self.network_end.output)
+            # Find all the layers in the network and use "acc_gradient" to store the gradient
+            while network.next_module is not None:
+                network=network.next_module
+                network.acc_gradient()
+            # For last layer
+            network.acc_gradient()
+        # After computing for all samples,find all the layers in the network and use "update" to update the parameters
         network=self.network
-        # Compute the error of this step
-        err=self.network_end.output.mean()
-        # Find all the layers in the network and use "update" to update the parameter
         while network.next_module is not None:
             network=network.next_module
             network.update(lr)
         # For last layer
         network.update(lr)
+        # Compute the average error of this batch
+        err=sum(err_list)*1.0/len(err_list)
         if self.step%self.print_interval==0:
             print ("step: ",self.step)
             print ("error: ",err)
@@ -137,24 +150,38 @@ class Optimizer():
             
         # Get the batch index for this step
         batch=random.sample(list(range(0, self.data_size)), self.batch_size)
-        # Choose the data,put it in the network
-        data_choose=self.train_data[batch,:]
-        self.network.input_value=FloatTensor(data_choose.astype(np.float))
-        # Choose the label,put it in the network
-        label_choose=self.train_labels[batch,:]
-        self.network_end.target=FloatTensor(label_choose.astype(np.float)).t()
-        # Do forward pass and backward pass
-        self.network.forward(True)
-        self.network_end.backward(True)
+        # Get a array for store the errors for each samples for this step
+        err_list=[]
+        for i in batch:
+            # Choose the data,change to a vector,put it in the network
+            data_choose=self.train_data[i,:]
+            data_choose.shape=data_choose.shape[0],1
+            self.network.input_value=FloatTensor(data_choose.astype(np.float))
+            # Choose the label,change to a vector,put it in the network
+            label_choose=self.train_labels[i,:]
+            label_choose.shape=label_choose.shape[0],1
+            self.network_end.target=FloatTensor(label_choose.astype(np.float))
+            # Do forward pass and backward pass
+            self.network.forward(True)
+            self.network_end.backward(True)
+            network=self.network
+            # Compute the error of this step this sample, and store it in the "err_list"
+            err_list.append(self.network_end.output)
+            # Find all the layers in the network and use "acc_gradient" to store the gradient
+            while network.next_module is not None:
+                network=network.next_module
+                network.acc_gradient()
+            # For last layer
+            network.acc_gradient()
+        # After computing for all samples,find all the layers in the network and use "update" to update the parameters
         network=self.network
-        # Compute the error of this step
-        err=self.network_end.output.mean()
-        # Find all the layers in the network and use "update" to update the parameter
         while network.next_module is not None:
             network=network.next_module
             network.update(lr)
         # For last layer
         network.update(lr)
+        # Compute the average error of this batch
+        err=sum(err_list)*1.0/len(err_list)
         if self.step%self.print_interval==0:
             print ("step: ",self.step)
             print ("error: ",err)
@@ -165,30 +192,39 @@ class Predict():
         while network.next_module is not None:
             network=network.next_module
         self.network_end=network
-    def batch_predict(self,test_batch):
+    def predict(self,test):
         '''
         Do prediction of neural networks.
         '''
-        # Put the data into the network
-        self.network.input_value=FloatTensor(test_batch)
+        # Change test data to vector and put it into the network
+        test.shape=test.shape[0],1
+        self.network.input_value=FloatTensor(test)
         network=self.network
-
+        
         # Change to test mode
         while network is not None:
             network.change_to_test()
             network=network.next_module
-            
+
+        # Do forward computation and return the value
         self.network.forward(True)
-        
         # If it is a Sequential module , split the last loss layer to get the result
         # Otherwise , find the result in prev_module
         if type(self.network_end).__name__=="Sequential":
-            re=self.network_end.get_layer(-2).output.t().numpy()
+            re=self.network_end.get_layer(-2).output.numpy()
         else:
-            re=self.network_end.prev_module.output.t().numpy()
-
-        return re
-
+            re=self.network_end.prev_module.output.numpy()
+        return np.reshape(re,(re.shape[0],))
+    def batch_predict(self,test_batch):
+        ''''
+        A batch version of prediction.Use loops to call "predict" to get prediction for all samples. 
+        '''
+        n=test_batch.shape[0]
+        result=[]
+        for i in range(n):
+            test=test_batch[i,:]
+            result.append(self.predict(test))
+        return np.array(result)
         
         
             
